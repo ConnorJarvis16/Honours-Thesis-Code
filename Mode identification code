@@ -1,0 +1,319 @@
+We present our algorithm (\textit{mode\_identifier}) for calculating the fundamental radial mode and the first, second and third overtone radial modes in \dsct\ stars using the P-L relation and calculated absolute magnitude value (see Chapter \ref{Mode Identification}). All code was written in \textsc{Python}.
+
+This code was also written to consider fundamental radial modes that are outside 3 $\sigma$ (see Chapter \ref{P-L Pressure Mode Frequency Minimum}) of the frequency of the fundamental radial mode calculated from the P-L relation, toggled by setting PL$\_$selection = False.
+
+import numpy as np
+import copy
+
+def ratio_generator(fundamental,peaks):
+    ratio_store = []
+    for peak in peaks:
+        ratio_store.append((1/peak)/(1/fundamental))
+    return ratio_store
+    
+def Period_prediction(Mv,gradient=-2.89,intercept=-1.31):
+    return 10**((Mv - intercept)/gradient)
+
+def mode_identifier(peak_info,Mv,Mv_std,std_factor=3,O1_f=[0.75,0.8],O2_f=[0.6,0.65],O3_f=[0.49,0.535],PL_selection=False,amp_weight=0.5,short_weight=0.5,ratio_weight=1,PL_weight=2):
+    """
+    This code takes as arguments, the calculated frequencies and amplitudes of calculated modes, the Mv and std of Mv of a \dsct\ star and returns any information regarding each mode according to the object row structure below
+    """
+    """
+    The canonical period ratios can be given as an argument, and the weights which paramterise relevant information can be given as an argument
+    """
+    # Object row structure (fun_freq fun_power O1_freq O1_power O1_ratio O2_freq O2_power O2_ratio O3_freq O3_power O3_ratio score info_coding)
+    # Information key: 2 - PL best selection; 3 - tallest peak; 5 - shortest frequency peak; 7 - most ratio matches;
+    # Form core peak information array to store potential fundamental peaks, associated peaks that fall in canonical ratios, fundamental metric, info regarding whether the peak is highest amp, shortest freq, best PL fit, most ratio fits
+    # Note code performs very differently if PL_selection True, only permits peaks that fall within 3 sigma of the PL relation calculated fundamental frequency
+    
+    peak_information = np.zeros(shape=(len(peak_info),13))
+    Mv_predicted_freq = []
+    Mv_predicted_power = []
+    counter = 0
+    # Initialise coding information -> info coded in primes
+    peak_information[:,12] = 1
+    # Initialise ratio_metric and ratio_index_store
+    ratio_metric = 1
+    ratio_index_store = []
+    
+    # For case where no peaks inputted
+    if len(peak_list)==0:
+        return np.zeros(shape=(1,12)), np.zeros(shape=(1,12))[0]
+
+    # For case of only one peak
+    if len(peak_list)==1:
+        if PL_selection:
+            if (peak_info[0,0]>1/Period_prediction(Mv-std_factor*Mv_std))&(peak_info[0,0]<1/Period_prediction(Mv+std_factor*Mv_std)):
+                peak_information[0,0] = peak_info[0,0]
+                peak_information[0,1] = peak_info[0,1]
+                PL_predicted_freq = 1/Period_prediction(Mv)
+                PL_freq_std = 1/Period_prediction(Mv+Mv_std)-1/Period_prediction(Mv)
+                peak_information[0,11] = amp_weight + short_weight + PL_weight*np.exp(-(((peak_info[0,0]-PL_predicted_freq)/PL_freq_std)**2))
+                peak_information[0,12] = peak_information[0,12]*2*3*5
+                return peak_information, peak_information[0]
+            else:
+                return np.zeros(shape=(1,12)), np.zeros(shape=(1,12))[0]
+                
+        else:
+            peak_information[0,0] = peak_info[0,0]
+            peak_information[0,1] = peak_info[0,1]
+            if (peak_info[0,0]>1/Period_prediction(Mv-std_factor*Mv_std))&(peak_info[0,0]<1/Period_prediction(Mv+std_factor*Mv_std)):
+                PL_predicted_freq = 1/Period_prediction(Mv)
+                PL_freq_std = 1/Period_prediction(Mv+Mv_std)-1/Period_prediction(Mv)
+                peak_information[0,11] = amp_weight + short_weight + PL_weight*np.exp(-(((Mv_predicted_freq[i]-PL_predicted_freq)/PL_freq_std)**2))
+                peak_information[0,12] = peak_information[0,12] * 3 * 5
+            else:
+                peak_information[0,11] = amp_weight + short_weight
+            return peak_information, peak_information[0]
+    
+    # Selects peaks that fall within 3 sigma of the PL predicted fundamental frequency
+    for i in range(len(peak_list)):
+        if (peak_info[i,0]>1/Period_prediction(Mv-std_factor*Mv_std))&(peak_info[i,0]<1/Period_prediction(Mv+std_factor*Mv_std)):
+            Mv_predicted_freq.append(peak_info[i,0])
+            Mv_predicted_power.append(peak_info[i,1])
+            counter+=1
+    
+    # Deals with case where no peaks exist in PL-expected range
+    if PL_selection & (len(Mv_predicted_freq)==0):
+        return np.zeros(shape=(1,12)), np.zeros(shape=(1,12))[0]
+    
+    # For peaks within 3 sigma of fundamental frequency:
+    if len(Mv_predicted_freq)>0:
+        for i in range(len(Mv_predicted_freq)):
+            # Store peak info
+            peak_information[i,0]=Mv_predicted_freq[i]
+            peak_information[i,1]=Mv_predicted_power[i]
+            # Create list of ratios of peak periods to test against canonical values
+            peak_store = copy.deepcopy(peak_info)
+            peak_store = np.delete(peak_store,np.where(peak_store==Mv_predicted_freq[i])[0],axis=0)
+#            peak_store.sort(axis=0)
+            ratio_store = ratio_generator(Mv_predicted_freq[i],peak_store[:,0])
+            # Finds weighted score, max of 2 if perfect match to PL relation, weighted with exp(-((O-C)/sd)**2)
+            PL_predicted_freq = 1/Period_prediction(Mv)
+            PL_freq_std = 1/Period_prediction(Mv+Mv_std)-1/Period_prediction(Mv)
+            PL_prediction = PL_weight*np.exp(-(((Mv_predicted_freq[i]-PL_predicted_freq)/PL_freq_std)**2))
+            # Creates scores for ratio test
+            first_overtone = 0
+            second_overtone = 0
+            third_overtone = 0
+            tallest_peak = 0
+            shortest_period = 0
+            PL_metric = 100
+            PL_index = 100
+            # If best PL_prediction, store index
+            if PL_prediction<PL_metric:
+                PL_metric=PL_prediction
+                PL_index = i
+            # Perform ratio test
+            for j in range(len(ratio_store)):
+                if (ratio_store[j]>O1_f[0])&(ratio_store[j]<O1_f[1]):
+                    if first_overtone == 0:
+                        peak_information[i,2] = peak_store[j,0]
+                        peak_information[i,3] = peak_store[j,1]
+                        peak_information[i,4] = ratio_store[j]
+                        first_overtone = ratio_weight
+                    if first_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[i,3]:
+                            peak_information[i,2] = peak_store[j,0]
+                            peak_information[i,3] = peak_store[j,1]
+                            peak_information[i,4] = ratio_store[j]
+                if (ratio_store[j]>O2_f[0])&(ratio_store[j]<O2_f[1]):
+                    if second_overtone == 0:
+                        peak_information[i,5] = peak_store[j,0]
+                        peak_information[i,6] = peak_store[j,1]
+                        peak_information[i,7] = ratio_store[j]
+                        second_overtone = ratio_weight
+                    if second_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[i,6]:
+                            peak_information[i,5] = peak_store[j,0]
+                            peak_information[i,6] = peak_store[j,1]
+                            peak_information[i,7] = ratio_store[j]
+                if (ratio_store[j]>O3_f[0])&(ratio_store[j]<O3_f[1]):
+                    if third_overtone == 0:
+                        peak_information[i,8] = peak_store[j,0]
+                        peak_information[i,9] = peak_store[j,1]
+                        peak_information[i,10] = ratio_store[j]
+                        third_overtone = ratio_weight
+                    if third_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[i,9]:
+                            peak_information[i,8] = peak_store[j,0]
+                            peak_information[i,9] = peak_store[j,1]
+                            peak_information[i,10] = ratio_store[j]
+            # If shortest frequency, encode
+            if Mv_predicted_freq[i]<peak_store[0,0]:
+                shortest_period = short_weight
+                peak_information[i,12] = peak_information[i,12] * 5
+            # If highest amp, encode
+            power_store = copy.deepcopy(peak_info[:,1])
+            power_store = np.delete(power_store,np.where(power_store==Mv_predicted_power[i])[0],axis=0)
+            if Mv_predicted_power[i]>max(power_store):
+                tallest_peak = amp_weight
+                peak_information[i,12] = peak_information[i,12] * 3
+            # Score peak based on PL_prediction, existence of canonical ratios, shortest freq, highest amp
+            peak_information[i,11] = PL_prediction + first_overtone + second_overtone + third_overtone + shortest_period + tallest_peak
+            # If most canonical ratios exist, store index
+            ratio_metric_i = first_overtone + second_overtone + third_overtone
+            if ratio_metric_i>=ratio_metric:
+                if ratio_metric_i>ratio_metric:
+                    ratio_metric = ratio_metric_i
+                    ratio_index_store.clear()
+                    ratio_index_store.append(i)
+                else:
+                    ratio_index_store.append(i)        
+    
+    
+
+    # If PL, encode best ratio score
+    if PL_selection:
+        # Encode best PL_relation
+        peak_information[PL_index,12] = peak_information[PL_index,12] * 2
+        for indices in ratio_index_store:
+            peak_information[indices,12] = peak_information[indices,12] * 7
+    
+    # If not PL, find highest amp peak, if not already in potential fundamental 
+    list
+    if not PL_selection:
+        index = np.where(peak_info==max(peak_info[:,1]))
+        max_amp_peak_freq = peak_info[index[0]][0][0]
+        max_amp_peak_amp = peak_info[index[0]][0][1]
+        if not max_amp_peak_freq in set(peak_information[:,0]):
+            peak_information[counter,0]=max_amp_peak_freq
+            peak_information[counter,1]=max_amp_peak_amp
+            peak_store = copy.deepcopy(peak_info)
+            peak_store.sort(axis=0)
+            peak_store = np.delete(peak_store,np.where
+            (peak_store==max_amp_peak_freq)[0],axis=0)
+            ratio_store = ratio_generator(max_amp_peak_freq,peak_store[:,0])        
+            PL_prediction = 0
+            first_overtone = 0
+            second_overtone = 0
+            third_overtone = 0
+            tallest_peak = amp_weight
+            shortest_period = 0
+            peak_information[counter,12] = peak_information[counter,12] * 3
+            for j in range(len(ratio_store)):
+                if (ratio_store[j]>O1_f[0])&(ratio_store[j]<O1_f[1]):
+                    if first_overtone == 0:
+                        peak_information[counter,2] = peak_store[j,0]
+                        peak_information[counter,3] = peak_store[j,1]
+                        peak_information[counter,4] = ratio_store[j]
+                        first_overtone = ratio_weight
+                    if first_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[counter,3]:
+                            peak_information[counter,2] = peak_store[j,0]
+                            peak_information[counter,3] = peak_store[j,1]
+                            peak_information[counter,4] = ratio_store[j]
+                if (ratio_store[j]>O2_f[0])&(ratio_store[j]<O2_f[1]):
+                    if second_overtone == 0:
+                        peak_information[counter,5] = peak_store[j,0]
+                        peak_information[counter,6] = peak_store[j,1]
+                        peak_information[counter,7] = ratio_store[j]
+                        second_overtone = ratio_weight
+                    if second_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[counter,6]:
+                            peak_information[counter,5] = peak_store[j,0]
+                            peak_information[counter,6] = peak_store[j,1]
+                            peak_information[counter,7] = ratio_store[j]
+                if (ratio_store[j]>O3_f[0])&(ratio_store[j]<O3_f[1]):
+                    if third_overtone == 0:
+                        peak_information[counter,8] = peak_store[j,0]
+                        peak_information[counter,9] = peak_store[j,1]
+                        peak_information[counter,10] = ratio_store[j]
+                        third_overtone = ratio_weight
+                    if third_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[counter,9]:
+                            peak_information[counter,8] = peak_store[j,0]
+                            peak_information[counter,9] = peak_store[j,1]
+                            peak_information[counter,10] = ratio_store[j]
+            if max_amp_peak_freq<peak_store[0,0]:
+                shortest_period = short_weight
+                peak_information[counter,12] = peak_information[counter,12]*5
+            peak_information[counter,11] = PL_prediction + first_overtone + second_overtone + third_overtone + shortest_period + tallest_peak
+            ratio_metric_i = first_overtone + second_overtone + third_overtone
+            if ratio_metric_i>=ratio_metric:
+                if ratio_metric_i>ratio_metric:
+                    ratio_metric = ratio_metric_i
+                    ratio_index_store.clear()
+                    ratio_index_store.append(counter)
+                else:
+                    ratio_index_store.append(counter)
+            counter+=1
+
+    # If not PL, find shortest freq peak, if not already in potential 
+    fundamental list
+    if not PL_selection:
+        index = np.where(peak_info==min(peak_info[:,0]))
+        shortest_freq_peak_freq = peak_info[index[0]][0][0]
+        shortest_freq_peak_amp = peak_info[index[0]][0][1]
+        if not shortest_freq_peak_freq in set(peak_information[:,0]):
+            peak_information[counter,0]=shortest_freq_peak_freq
+            peak_information[counter,1]=shortest_freq_peak_amp
+            peak_store = copy.deepcopy(peak_info)
+            peak_store.sort(axis=0)
+            peak_store = np.delete(peak_store,np.where
+            (peak_store==shortest_freq_peak_freq)[0],axis=0)
+            ratio_store = ratio_generator
+            (shortest_freq_peak_freq,peak_store[:,0])
+            PL_prediction = 0
+            first_overtone = 0
+            second_overtone = 0
+            third_overtone = 0
+            tallest_peak = 0
+            shortest_period = short_weight
+            peak_information[counter,12] = peak_information[counter,12]*5
+            for j in range(len(ratio_store)):
+                if (ratio_store[j]>O1_f[0])&(ratio_store[j]<O1_f[1]):
+                    if first_overtone == 0:
+                        peak_information[counter,2] = peak_store[j,0]
+                        peak_information[counter,3] = peak_store[j,1]
+                        peak_information[counter,4] = ratio_store[j]
+                        first_overtone = ratio_weight
+                    if first_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[counter,3]:
+                            peak_information[counter,2] = peak_store[j,0]
+                            peak_information[counter,3] = peak_store[j,1]
+                            peak_information[counter,4] = ratio_store[j]
+                if (ratio_store[j]>O2_f[0])&(ratio_store[j]<O2_f[1]):
+                    if second_overtone == 0:
+                        peak_information[counter,5] = peak_store[j,0]
+                        peak_information[counter,6] = peak_store[j,1]
+                        peak_information[counter,7] = ratio_store[j]
+                        second_overtone = ratio_weight
+                    if second_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[counter,6]:
+                            peak_information[counter,5] = peak_store[j,0]
+                            peak_information[counter,6] = peak_store[j,1]   
+                            peak_information[counter,7] = ratio_store[j]
+                if (ratio_store[j]>O3_f[0])&(ratio_store[j]<O3_f[1]):
+                    if third_overtone == 0:
+                        peak_information[counter,8] = peak_store[j,0]
+                        peak_information[counter,9] = peak_store[j,1]
+                        peak_information[counter,10] = ratio_store[j]
+                        third_overtone = ratio_weight
+                    if third_overtone == ratio_weight:
+                        if peak_store[j,1]>peak_information[counter,9]:
+                            peak_information[counter,8] = peak_store[j,0]
+                            peak_information[counter,9] = peak_store[j,1]   
+                            peak_information[counter,10] = ratio_store[j]
+            peak_information[counter,11] = PL_prediction + first_overtone + second_overtone + third_overtone + shortest_period + tallest_peak
+            ratio_metric_i = first_overtone + second_overtone + third_overtone
+            if ratio_metric_i>=ratio_metric:
+                if ratio_metric_i>ratio_metric:
+                    ratio_metric = ratio_metric_i
+                    ratio_index_store.clear()
+                    ratio_index_store.append(counter)
+                else:
+                    ratio_index_store.append(counter)
+            counter+=1
+
+    # If not PL, encode best ratio score
+    if not PL_selection:
+        for indices in ratio_index_store:
+            peak_information[indices,12] = peak_information[indices,12] * 7    
+    
+    peak_information = np.delete(np.asarray(peak_information),np.arange(counter,len(peak_list)),axis=0)
+    ### Fundamental selector
+    index = np.where(peak_information==max(peak_information[:,11]))
+    fundamental = peak_information[index[0]][0]
+    
+    return peak_information, fundamental
